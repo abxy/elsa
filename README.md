@@ -1,9 +1,14 @@
 elsa
 =====
 
-An OTP application
+A project to build a langauge server for Erlang.
 
-Build
------
 
-    $ rebar3 compile
+Current Status
+--------------
+
+Can accept connections over TCP and parse JSON RPC messages.
+No language features implemented.
+
+
+

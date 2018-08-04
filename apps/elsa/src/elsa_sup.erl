@@ -31,7 +31,8 @@ start_link() ->
 %% Before OTP 18 tuples must be used to specify a child. e.g.
 %% Child :: {Id,StartFunc,Restart,Shutdown,Type,Modules}
 init([]) ->
-    {ok, { {one_for_all, 0, 1}, []} }.
+    Children = [#{id => elsa_lsp, start => {elsa_lsp, start_link, [9000]}}],
+    {ok, {{one_for_all, 0, 1}, Children}}.
 
 %%====================================================================
 %% Internal functions
