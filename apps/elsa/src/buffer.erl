@@ -38,9 +38,30 @@ take_chunk(Size, Binary) ->
             take_chunk(Size + 1, Binary)
     end.
 
+% Measures a single chunk of UTF8 encoded text.
+%
+% The measurement of a buffer is `{Line, Col, FirstIsLF, LastIsCR}`.
+% `Line` is the 0 based line offset at the end, or viewed another way
+% the number of line breaks.
+% `Col` is the 0 based character offset at the end of the last line.
+% Taken together they represent the (Line, Col) position of a cursor
+% placed at the end of the buffer.
+%
+% `Col` follows the Language Server Protocol (LSP) specification in that
+% it counts Unicode code points at U+10000 or higher as 2  characters.
+% Recognized line breaks are "\n" (LF), "\r" (CR), and "\r\n" (CRLF).
+%
+% Adding the measurements of two buffers (cf. `size_add`) should yield
+% the same answer as concatenating the buffers and measuring the result.
+% In order to preserve a correct `Line` count, we need to know if
+% concatenating the buffers would result in a CR and LF being joined
+% to form a CRLF. This information is embedded in the two bools
+% `FirstIsLF` which is true if the buffer starts with LF, and
+% `LastIsCR` which is true if the buffer ends with CR.
+%
 measure_chunk(<<>>) -> undefined;
 measure_chunk(Chunk) ->
-    {Lines, Chars} = measure_chunk(0, 0, Chunk),
+    {Line, Col} = line_col(0, 0, Chunk),
     SizeSub1 = byte_size(Chunk) - 1,
     SizeSub2 = byte_size(Chunk) - 2,
     {FirstIsLF, LastIsCR} =
@@ -50,32 +71,37 @@ measure_chunk(Chunk) ->
             <<_:SizeSub1/binary, "\r">> -> {false, true};
             _ -> {false, false}
         end,
-    {Lines, Chars, FirstIsLF, LastIsCR}.
+    {Line, Col, FirstIsLF, LastIsCR}.
 
-
-measure_chunk(Lines, Chars, <<>>) ->
-    {Lines, Chars};
-measure_chunk(Lines, Chars, <<"\n"/utf8, Rest/binary>>) ->
-    measure_chunk(Lines+1, Chars+1, Rest);
-measure_chunk(Lines, Chars, <<"\r\n"/utf8, Rest/binary>>) ->
-    measure_chunk(Lines+1, Chars+1, Rest);
-measure_chunk(Lines, Chars, <<"\r"/utf8, Rest/binary>>) ->
-   measure_chunk(Lines+1, Chars+1, Rest);
-measure_chunk(Lines, Chars, <<C/utf8, Rest/binary>>) when C >= 16#10000 ->
+% Calculate the {Line, Col} position at the end of the chunk.
+%
+line_col(Line, Col, <<>>) ->
+    {Line, Col};
+line_col(Line, _Col, <<"\n"/utf8, Rest/binary>>) ->
+    line_col(Line+1, 0, Rest);
+line_col(Line, _Col, <<"\r\n"/utf8, Rest/binary>>) ->
+    line_col(Line+1, 0, Rest);
+line_col(Line, _Col, <<"\r"/utf8, Rest/binary>>) ->
+   line_col(Line+1, 0, Rest);
+line_col(Line, Col, <<C/utf8, Rest/binary>>) when C >= 16#10000 ->
     % The LSP spec requires U+10000 and above to be counted as 2 characters
-    measure_chunk(Lines, Chars+2, Rest);
-measure_chunk(Lines, Chars, <<_/utf8, Rest/binary>>) ->
-    measure_chunk(Lines, Chars+1, Rest);
-measure_chunk(_, _, _) ->
+    line_col(Line, Col+2, Rest);
+line_col(Line, Col, <<_/utf8, Rest/binary>>) ->
+    line_col(Line, Col+1, Rest);
+line_col(_, _, _) ->
     throw({error, invalid_utf8}).
+
 
 size_add(undefined, Size) -> Size;
 size_add(Size, undefined) -> Size;
-size_add({Ls1, Cs1, LF, true}, {Ls2, Cs2, true, CR}) ->
+size_add({Line, Col1, LF, _}, {0, Col2, _, _}) ->
+    {Line, Col1 + Col2, LF, false};
+size_add({Line1, _, LF, true}, {Line2, Col, true, CR}) ->
     % Deduct 1 line for the merged CRLF
-    {Ls1 + Ls2 - 1, Cs1 + Cs2, LF, CR};
-size_add({Ls1, Cs1, LF, _}, {Ls2, Cs2, _, CR}) ->
-    {Ls1 + Ls2, Cs1 + Cs2, LF, CR}.
+    {Line1 + Line2 - 1, Col, LF, CR};
+size_add({Line1, _, LF, _}, {Line2, Col, _, CR}) ->
+    {Line1 + Line2, Col, LF, CR}.
+
 
 measure(Chunk) when is_binary(Chunk) -> measure_chunk(Chunk);
 measure({Size, _, _}) -> Size;
@@ -164,4 +190,4 @@ deep_l(Pr, M, Sf) -> deep(Pr, M, Sf).
 % Property tests
 
 prop_measure_from_binary() ->
-    ?FORALL(Bin, binary(), (catch measure(Bin)) =:= (catch measure_tree(from_binary(Bin)))).
+    ?FORALL(Bin, utf8(), measure(Bin) =:= measure_tree(from_binary(Bin))).
