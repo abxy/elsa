@@ -1,6 +1,8 @@
 -module(buffer).
 -compile([export_all, nowarn_export_all]).
 
+-include_lib("proper/include/proper.hrl").
+
 % Experiments in building a text buffer data structure
 % for use in the elsa language server.
 %
@@ -36,6 +38,7 @@ take_chunk(Size, Binary) ->
             take_chunk(Size + 1, Binary)
     end.
 
+measure_chunk(<<>>) -> undefined;
 measure_chunk(Chunk) ->
     {Lines, Chars} = measure_chunk(0, 0, Chunk),
     SizeSub1 = byte_size(Chunk) - 1,
@@ -155,3 +158,10 @@ deep_l({}, M, Sf) ->
             deep(Hd, Tl, Sf)
     end;
 deep_l(Pr, M, Sf) -> deep(Pr, M, Sf).
+
+
+%-------------------------------------------------------------------------------
+% Property tests
+
+prop_measure_from_binary() ->
+    ?FORALL(Bin, binary(), (catch measure(Bin)) =:= (catch measure_tree(from_binary(Bin)))).
