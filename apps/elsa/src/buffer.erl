@@ -246,7 +246,7 @@ split_digit(Pred, Acc, Digit) ->
     split_digit(Pred, Acc, Digit, 1).
 
 split_digit(Pred, Acc, Digit, I) when I < tuple_size(Digit) ->
-    Acc1 = size_add(Acc, measure(element(1, Digit))),
+    Acc1 = size_add(Acc, measure(element(I, Digit))),
     case Pred(Acc1) of
         true -> I;
         false -> split_digit(Pred, Acc1, Digit, I + 1)
