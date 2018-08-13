@@ -129,6 +129,9 @@ node3(A, B, C) ->
     Size = size_add(measure(A), size_add(measure(B), measure(C))),
     {Size, A, B, C}.
 
+% Convert a node to a digit.
+node_to_digit(Node) -> erlang:delete_element(1, Node).
+
 % Smart constructor for deep trees.
 deep(Sf, M, Pr) ->
     Size = size_add(measure_digit(Sf), size_add(measure_tree(M), measure_digit(Pr))),
@@ -176,10 +179,8 @@ deep_l({}, M, Sf) ->
     case view_l(M) of
         empty -> digit_to_tree(Sf);
         {Hd, Tl} ->
-            % The middle tree always stores 2,3-nodes, so we know
-            % that Hd will be a tuple with 2 or 3 elements, thus
-            % we can it as the digit prefix without conversion.
-            deep(Hd, Tl, Sf)
+            % Head of a middle tree is always a 2,3-node
+            deep(node_to_digit(Hd), Tl, Sf)
     end;
 deep_l(Pr, M, Sf) -> deep(Pr, M, Sf).
 
@@ -192,10 +193,8 @@ deep_r(Pr, M, {}) ->
     case view_r(M) of
         empty -> digit_to_tree(Pr);
         {Tl, Hd} ->
-            % The middle tree always stores 2,3-nodes, so we know
-            % that Hd will be a tuple with 2 or 3 elements, thus
-            % we can it as the digit suffix without conversion.
-            deep(Pr, Tl, Hd)
+            % Head of a middle tree is always a 2,3-node
+            deep(Pr, Tl, node_to_digit(Hd))
     end;
 deep_r(Pr, M, Sf) -> deep(Pr, M, Sf).
 
@@ -228,8 +227,7 @@ split_tree(Pred, Acc, {deep, _Sz, Pr, M, Sf}) ->
                     {ML, Xs, MR} = split_tree(Pred, AccPr, M),
                     AccPrML = size_add(AccPr, measure_tree(ML)),
                     % Since we recursed Xs must be a 2,3-node
-                    % which can be treated as a digit
-                    I = split_digit(Pred, AccPrML, Xs),
+                    I = split_digit(Pred, AccPrML, node_to_digit(Xs)),
                     L = take_l_digit(Xs, I - 1),
                     R = take_r_digit(Xs, tuple_size(Xs) - I),
                     {deep_r(Pr, ML, L), element(I, Xs), deep_l(R, MR, Sf)};
