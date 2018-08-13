@@ -1,7 +1,9 @@
 -module(buffer).
 -compile([export_all, nowarn_export_all]).
 
+-ifdef(TEST).
 -include_lib("proper/include/proper.hrl").
+-endif.
 
 % Experiments in building a text buffer data structure
 % for use in the elsa language server.
@@ -161,10 +163,6 @@ push_r(A, B) when byte_size(A) + byte_size(B) =< ?MERGE_CHUNK_SIZE ->
 push_r(A, B) ->
     deep({A}, empty, {B}).
 
-digit_to_tree({A}) -> A;
-digit_to_tree(Digit) ->
-    deep({element(1, Digit)}, empty, erlang:delete_element(1, Digit)).
-
 head_l({deep, _Sz, Pr, _M, _Sf}) -> element(1, Pr).
 
 tail_l({deep, _Sz, Pr, M, Sf}) -> deep_l(erlang:delete_element(1, Pr), M, Sf).
@@ -185,9 +183,109 @@ deep_l({}, M, Sf) ->
     end;
 deep_l(Pr, M, Sf) -> deep(Pr, M, Sf).
 
+view_r(empty) -> empty;
+view_r({deep, _Sz, Pr, M, Sf}) ->
+    {deep_r(Pr, M, erlang:delete_element(tuple_size(Sf), Sf)), element(tuple_size(Sf), Sf)};
+view_r(S) -> {S, empty}.
+
+deep_r(Pr, M, {}) ->
+    case view_r(M) of
+        empty -> digit_to_tree(Pr);
+        {Tl, Hd} ->
+            % The middle tree always stores 2,3-nodes, so we know
+            % that Hd will be a tuple with 2 or 3 elements, thus
+            % we can it as the digit suffix without conversion.
+            deep(Pr, Tl, Hd)
+    end;
+deep_r(Pr, M, Sf) -> deep(Pr, M, Sf).
+
+% TODO: Make this more balanced
+digit_to_tree({A}) -> A;
+digit_to_tree(Digit) ->
+    deep({element(1, Digit)}, empty, erlang:delete_element(1, Digit)).
+
+% `From` and `To` are inclusive.
+%
+digit_to_tree(Digit, From, To) ->
+    digit_to_tree(Digit, From, To, empty).
+
+digit_to_tree(Digit, I, To, Tree) when I =< To ->
+    digit_to_tree(Digit, I + 1, To, push_l(element(I, Digit), Tree));
+digit_to_tree(_, _, _, Tree) -> Tree.
+
+split_tree(Pred, Acc, {deep, _Sz, Pr, M, Sf}) ->
+    AccPr = size_add(Acc, measure_digit(Pr)),
+    case Pred(AccPr) of
+        true ->
+            I = split_digit(Pred, AccPr, Pr),
+            L = digit_to_tree(Pr, 1, I - 1),
+            R = take_r_digit(Pr, tuple_size(Pr) - I),
+            {L, element(I, Pr), deep_l(R, M, Sf)};
+        false ->
+            AccPrM = size_add(AccPr, measure_tree(M)),
+            case Pred(AccPrM) of
+                true ->
+                    {ML, Xs, MR} = split_tree(Pred, AccPr, M),
+                    AccPrML = size_add(AccPr, measure_tree(ML)),
+                    % Since we recursed Xs must be a 2,3-node
+                    % which can be treated as a digit
+                    I = split_digit(Pred, AccPrML, Xs),
+                    L = take_l_digit(Xs, I - 1),
+                    R = take_r_digit(Xs, tuple_size(Xs) - I),
+                    {deep_r(Pr, ML, L), element(I, Xs), deep_l(R, MR, Sf)};
+                false ->
+                    I = split_digit(Pred, AccPrM, Sf),
+                    R = digit_to_tree(Sf, I + 1, tuple_size(Sf)),
+                    L = take_l_digit(Pr, I - 1),
+                    {deep_r(Pr, M, L), element(I, Sf), R}
+            end
+    end;
+split_tree(_Pred, _Acc, Single) -> {empty, Single, empty}.
+
+% Finds the index of the split point in a digit.
+%
+split_digit(Pred, Acc, Digit) ->
+    split_digit(Pred, Acc, Digit, 1).
+
+split_digit(Pred, Acc, Digit, I) when I < tuple_size(Digit) ->
+    Acc1 = size_add(Acc, measure(element(1, Digit))),
+    case Pred(Acc1) of
+        true -> I;
+        false -> split_digit(Pred, Acc1, Digit, I + 1)
+    end;
+split_digit(_Pred, _Acc, _Digit, I) -> I.
+
+take_r_digit(Digit, N) when N > tuple_size(Digit) ->
+    throw({error, take_r_digit});
+take_r_digit(_Digit, 0) -> {};
+take_r_digit(Digit, 1) ->
+    {element(tuple_size(Digit), Digit)};
+take_r_digit(Digit, 2) ->
+    N = tuple_size(Digit),
+    {element(N-1, Digit), element(N, Digit)};
+take_r_digit(Digit, 3) ->
+    N = tuple_size(Digit),
+    {element(N-2, Digit), element(N-1, Digit), element(N, Digit)};
+% Must be whole digit since 4 is the maxim length
+take_r_digit(Digit, 4) -> Digit.
+
+
+take_l_digit(Digit, N) when N > tuple_size(Digit) ->
+    throw({error, take_l_digit});
+take_l_digit(_Digit, 0) -> {};
+take_l_digit(Digit, 1) -> {element(1, Digit)};
+take_l_digit(Digit, 2) -> {element(1, Digit), element(2, Digit)};
+take_l_digit(Digit, 3) -> {element(1, Digit), element(2, Digit), element(3, Digit)};
+ % Must be whole digit since 4 is the maxim length
+take_l_digit(Digit, 4) -> Digit.
+
 
 %-------------------------------------------------------------------------------
 % Property tests
 
+-ifdef(TEST).
+
 prop_measure_from_binary() ->
     ?FORALL(Bin, utf8(), measure(Bin) =:= measure_tree(from_binary(Bin))).
+
+-endif.
