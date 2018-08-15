@@ -30,6 +30,8 @@ scan(<<C, _/binary>> = Cs, Next, Toks) when C >= $a, C =< $z ->
     scan_atom(Cs, Next, Toks, 0, 0, Cs);
 scan(<<C, _/binary>> = Cs, Next, Toks) when C >= $A, C =< $Z ->
     scan_variable(Cs, Next, Toks, 0, 0, Cs);
+scan(<<C, _/binary>> = Cs, Next, Toks) when ?DIGIT(C) ->
+    scan_number(Cs, Next, Toks, 0, 0, Cs);
 ?scan(",");
 ?scan(";");
 ?scan("(");
@@ -77,6 +79,37 @@ scan(<<>>, Next, Toks) when Next =/= eof ->
 scan(<<>>, eof, Toks) ->
     {ok, lists:reverse(Toks)}.
 
+scan_number(<<C, Rest/binary>>, Next, Toks, Col, Bytes, Head) when ?DIGIT(C) ->
+    scan_number(Rest, Next, Toks, Col + 1, Bytes + 1, Head);
+scan_number(<<"#", Rest/binary>>, Next, Toks, Col, Bytes, Head) ->
+    Base = binary_to_integer(iolist_take(Head, Bytes)),
+    if
+        Base >= 2, Base =< 36 ->
+            scan_based_int(Rest, Next, Toks, Col+1, Bytes+1, Head, Base);
+        true ->
+            {error, {illegal, base}}
+    end;
+scan_number(<<>>, Next, Toks, Col, Bytes, Head) when Next =/= eof ->
+    {more, fun (More, Next1) -> scan_number(More, Next1, Toks, Col, Bytes, [Head|More]) end};
+scan_number(Rest, Next, Toks, Col, Bytes, Head) ->
+    Text = iolist_take(Head, Bytes),
+    Tok = {int, Col, Text},
+    scan(Rest, Next, [Tok|Toks]).
+
+-define(DIGIT_IN_BASE(C, Base),
+    ((C >= $0 andalso C - $0 < Base) orelse
+    (C >= $a andalso C - $a + 10 < Base) orelse
+    (C >= $A andalso C - $A + 10 < Base))).
+
+scan_based_int(<<C, Rest/binary>>, Next, Toks, Col, Bytes, Head, Base) when ?DIGIT_IN_BASE(C, Base) ->
+    scan_based_int(Rest, Next, Toks, Col + 1, Bytes + 1, Head, Base);
+scan_based_int(<<>>, Next, Toks, Col, Bytes, Head, Base) when Next =/= eof ->
+    {more, fun (More, Next1) -> scan_based_int(More, Next1, Toks, Col, Bytes, [Head|More], Base) end};
+scan_based_int(Rest, Next, Toks, Col, Bytes, Head, Base) ->
+    Text = iolist_take(Head, Bytes),
+    Tok = {int, Col, Text},
+    scan(Rest, Next, [Tok|Toks]).
+
 scan_variable(Cs, Next, Toks, Col, Bytes, Head) ->
     case scan_name(Cs, Next, Col, Bytes) of
         {more, Col1, Bytes1} ->
@@ -92,7 +125,8 @@ scan_atom(Cs, Next, Toks, Col, Bytes, Head) ->
         {more, Col1, Bytes1} ->
             {more, fun (More, Next1) -> scan_atom(More, Next1, Toks, Col1, Bytes1, [Head|More]) end};
         {ok, Col1, Bytes1, Rest} ->
-            Name = iolist_take(Head, Bytes1),
+            BinName = iolist_take(Head, Bytes1),
+            Name = binary_to_atom(BinName, utf8),
             Tok = case reserved_word(Name) of
                 true -> {Name, Col1};
                 false -> {atom, Col1, Name}
@@ -103,8 +137,8 @@ scan_atom(Cs, Next, Toks, Col, Bytes, Head) ->
 scan_name(<<C, Rest/binary>>, Next, Col, Bytes) when C >= $a, C =< $z
                                                    ; C >= $A, C =< $Z ->
     scan_name(Rest, Next, Col + 1, Bytes + 1);
-scan_name(<<C, Rest/binary>>, Next, Col, Bytes) when C >= $ß, C =< $ÿ, C =/= $÷
-                                                   ; C >= $À, C =< $Þ, C =/= $× ->
+scan_name(<<C/utf8, Rest/binary>>, Next, Col, Bytes) when C >= $ß, C =< $ÿ, C =/= $÷
+                                                        ; C >= $À, C =< $Þ, C =/= $× ->
     scan_name(Rest, Next, Col + char_col_size(C), Bytes + char_byte_size(C));
 scan_name(<<>>, Next, Col, Bytes) when Next =/= eof ->
     {more, Col, Bytes};
