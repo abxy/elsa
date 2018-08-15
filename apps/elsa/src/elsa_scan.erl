@@ -24,14 +24,18 @@
     ?scan(Str)
 ).
 
-scan(<<C, Rest/binary>>, Next, Toks) when C >= 0, C =< 32 ->
-    skip_white_space(Rest, Next, Toks, 0, 0);
+scan(<<C, _/binary>> = Cs, Next, Toks) when C >= 0, C =< 32 ->
+    scan_white_space(Cs, Next, Toks, 0, 0, 0, Cs);
 scan(<<C, _/binary>> = Cs, Next, Toks) when C >= $a, C =< $z ->
     scan_atom(Cs, Next, Toks, 0, 0, Cs);
 scan(<<C, _/binary>> = Cs, Next, Toks) when C >= $A, C =< $Z ->
     scan_variable(Cs, Next, Toks, 0, 0, Cs);
+scan(<<"_"/utf8, _/binary>> = Cs, Next, Toks) ->
+    scan_variable(Cs, Next, Toks, 0, 0, Cs);
 scan(<<C, _/binary>> = Cs, Next, Toks) when ?DIGIT(C) ->
     scan_number(Cs, Next, Toks, 0, 0, Cs);
+scan(<<"%"/utf8, Rest/binary>> = Cs, Next, Toks) ->
+    scan_comment(Rest, Next, Toks, 0, 1, Cs);
 ?scan(",");
 ?scan(";");
 ?scan("(");
@@ -105,7 +109,7 @@ scan_based_int(<<C, Rest/binary>>, Next, Toks, Col, Bytes, Head, Base) when ?DIG
     scan_based_int(Rest, Next, Toks, Col + 1, Bytes + 1, Head, Base);
 scan_based_int(<<>>, Next, Toks, Col, Bytes, Head, Base) when Next =/= eof ->
     {more, fun (More, Next1) -> scan_based_int(More, Next1, Toks, Col, Bytes, [Head|More], Base) end};
-scan_based_int(Rest, Next, Toks, Col, Bytes, Head, Base) ->
+scan_based_int(Rest, Next, Toks, Col, Bytes, Head, _Base) ->
     Text = iolist_take(Head, Bytes),
     Tok = {int, Col, Text},
     scan(Rest, Next, [Tok|Toks]).
@@ -154,20 +158,35 @@ iolist_take([L|Ls], Len) ->
     H = iolist_take(L, Len),
     <<H/binary, (iolist_take(Ls, Len - byte_size(H)))/binary>>.
 
-skip_white_space(<<"\n"/utf8, Rest/binary>>, Next, Toks, Line, _Col) ->
-    skip_white_space(Rest, Next, Toks, Line + 1, 0);
-skip_white_space(<<"\r\n"/utf8, Rest/binary>>, Next, Toks, Line, _Col) ->
-    skip_white_space(Rest, Next, Toks, Line + 1, 0);
-skip_white_space(<<"\r"/utf8>> = Cs, Next, Toks, Line, _Col) when Next =/= eof ->
+scan_comment(<<C, _/binary>> = Cs, Next, Toks, Col, Size, Acc) when C == $\n orelse C == $\r ->
+    Comment = iolist_take(Acc, Size),
+    Tok = {comment, Col, Comment},
+    scan_white_space(Cs, Next, [Tok|Toks], 0, 0, 0, Cs);
+scan_comment(<<C/utf8, Rest/binary>>, Next, Toks, Col, Size, Acc) ->
+    scan_comment(Rest, Next, Toks, Col + char_col_size(C), Size + char_byte_size(C), Acc);
+scan_comment(<<>>, eof, Toks, Col, Size, Acc) ->
+    Comment = iolist_take(Acc, Size),
+    Tok = {comment, Col, Comment},
+    lists:reverse([Tok|Toks]);
+scan_comment(<<>>, _Next, Toks, Col, Size, Acc) ->
+    {more, fun (More, Next1) -> scan_comment(More, Next1, Toks, Col, Size, [Acc|More]) end}.
+
+scan_white_space(<<"\n"/utf8, Rest/binary>>, Next, Toks, Line, _Col, Bytes, Head) ->
+    scan_white_space(Rest, Next, Toks, Line + 1, 0, Bytes + 1, Head);
+scan_white_space(<<"\r\n"/utf8, Rest/binary>>, Next, Toks, Line, _Col, Bytes, Head) ->
+    scan_white_space(Rest, Next, Toks, Line + 1, 0, Bytes + 2, Head);
+scan_white_space(<<"\r"/utf8>> = Cs, Next, Toks, Line, _Col, Bytes, Head) when Next =/= eof ->
     {more, fun (More, Next1) ->
-        skip_white_space(<<Cs/binary, More>>, Next1, Toks, Line, 0)
+        scan_white_space(<<Cs/binary, More>>, Next1, Toks, Line, 0, Bytes, [Head|More])
     end};
-skip_white_space(<<"\r"/utf8, Rest/binary>>, Next, Toks, Line, _Col) ->
-    skip_white_space(Rest, Next, Toks, Line + 1, 0);
-skip_white_space(<<C, Rest/binary>>, Next, Line, Col, Toks) when ?WHITE_SPACE(C) ->
-    skip_white_space(Rest, Next, Toks, Line, Col + 1);
-skip_white_space(Cs, Next, Toks, _Line, _Col) ->
-    scan(Cs, Next, Toks).
+scan_white_space(<<"\r"/utf8, Rest/binary>>, Next, Toks, Line, _Col, Bytes, Head) ->
+    scan_white_space(Rest, Next, Toks, Line + 1, 0, Bytes + 1, Head);
+scan_white_space(<<C, Rest/binary>>, Next, Toks, Line, Col, Bytes, Head) when ?WHITE_SPACE(C) ->
+    scan_white_space(Rest, Next, Toks, Line, Col + 1, Bytes + 1, Head);
+scan_white_space(Cs, Next, Toks, Line, Col, Bytes, Head) ->
+    WS = iolist_take(Head, Bytes),
+    Tok = {white_space, {Line, Col}, WS},
+    scan(Cs, Next, [Tok|Toks]).
 
 -compile({inline, [char_col_size/1, char_byte_size/1]}).
 
